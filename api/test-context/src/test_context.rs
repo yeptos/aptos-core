@@ -43,7 +43,7 @@ use aptos_types::{
     ledger_info::{LedgerInfo, LedgerInfoWithSignatures},
     transaction::{
         signature_verified_transaction::into_signature_verified_block, Transaction,
-        TransactionPayload, TransactionStatus,
+        TransactionPayload, TransactionStatus, Version,
     },
 };
 use aptos_vm::AptosVM;
@@ -53,6 +53,7 @@ use hyper::{HeaderMap, Response};
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use std::{boxed::Box, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use tokio::sync::watch::channel;
 use warp::{http::header::CONTENT_TYPE, Filter, Rejection, Reply};
 use warp_reverse_proxy::reverse_proxy_filter;
 
@@ -118,12 +119,14 @@ pub fn new_test_context(
     let (root_key, genesis, genesis_waypoint, validators) = builder.build(&mut rng).unwrap();
     let (validator_identity, _, _, _) = validators[0].get_key_objects(None).unwrap();
     let validator_owner = validator_identity.account_address.unwrap();
-
+    let (sender, recver) = channel::<Version>(0);
     let (db, db_rw) = if use_db_with_indexer {
-        DbReaderWriter::wrap(AptosDB::new_for_test_with_indexer(
+        let mut aptos_db = AptosDB::new_for_test_with_indexer(
             &tmp_dir,
             node_config.storage.rocksdb_configs.enable_storage_sharding,
-        ))
+        );
+        aptos_db.add_version_update_subscriber(sender).unwrap();
+        DbReaderWriter::wrap(aptos_db)
     } else {
         DbReaderWriter::wrap(
             AptosDB::open(
@@ -155,7 +158,7 @@ pub fn new_test_context(
         .storage
         .set_data_dir(tmp_dir.path().to_path_buf());
     let mock_indexer_service =
-        MockInternalIndexerDBService::new_for_test(db_rw.reader.clone(), &node_config);
+        MockInternalIndexerDBService::new_for_test(db_rw.reader.clone(), &node_config, recver);
 
     let context = Context::new(
         ChainId::test(),
@@ -446,6 +449,26 @@ impl TestContext {
         ])
         .await;
         multisig_address
+    }
+
+    pub async fn create_multisig_account_with_existing_account(
+        &mut self,
+        account: &mut LocalAccount,
+        owners: Vec<AccountAddress>,
+        signatures_required: u64,
+        initial_balance: u64,
+    ) {
+        let factory = self.transaction_factory();
+        let txn = account.sign_with_transaction_builder(
+            factory
+                .create_multisig_account_with_existing_account(owners, signatures_required)
+                .expiration_timestamp_secs(u64::MAX),
+        );
+        self.commit_block(&vec![
+            txn,
+            self.account_transfer_to(account, account.address(), initial_balance),
+        ])
+        .await;
     }
 
     pub async fn create_multisig_transaction(

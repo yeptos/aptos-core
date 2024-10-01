@@ -106,6 +106,14 @@ pub enum CliError {
     MoveTestError,
     #[error("Move Prover failed: {0}")]
     MoveProverError(String),
+    #[error(
+        "The package is larger than {1} bytes ({0} bytes)! \
+        To lower the size you may want to include less artifacts via `--included-artifacts`. \
+        You can also override this check with `--override-size-check`. \
+        Alternatively, you can use the `--chunked-publish` to enable chunked publish mode, \
+        which chunks down the package and deploys it in several stages."
+    )]
+    PackageSizeExceeded(usize, usize),
     #[error("Unable to parse '{0}': error: {1}")]
     UnableToParse(&'static str, String),
     #[error("Unable to read file '{0}', error: {1}")]
@@ -131,6 +139,7 @@ impl CliError {
             CliError::MoveCompilationError(_) => "MoveCompilationError",
             CliError::MoveTestError => "MoveTestError",
             CliError::MoveProverError(_) => "MoveProverError",
+            CliError::PackageSizeExceeded(_, _) => "PackageSizeExceeded",
             CliError::UnableToParse(_, _) => "UnableToParse",
             CliError::UnableToReadFile(_, _) => "UnableToReadFile",
             CliError::UnexpectedError(_) => "UnexpectedError",
@@ -966,7 +975,7 @@ impl SaveFile {
 }
 
 /// Options specific to using the Rest endpoint
-#[derive(Debug, Default, Parser)]
+#[derive(Debug, Parser)]
 pub struct RestOptions {
     /// URL to a fullnode on the network
     ///
@@ -983,6 +992,16 @@ pub struct RestOptions {
     /// environment variable.
     #[clap(long, env)]
     pub node_api_key: Option<String>,
+}
+
+impl Default for RestOptions {
+    fn default() -> Self {
+        Self {
+            url: None,
+            connection_timeout_secs: DEFAULT_EXPIRATION_SECS,
+            node_api_key: None,
+        }
+    }
 }
 
 impl RestOptions {
@@ -1604,7 +1623,7 @@ pub struct TransactionOptions {
     #[clap(flatten)]
     pub(crate) gas_options: GasOptions,
     #[clap(flatten)]
-    pub(crate) prompt_options: PromptOptions,
+    pub prompt_options: PromptOptions,
 
     /// If this option is set, simulate the transaction locally.
     #[clap(long)]
@@ -2018,7 +2037,7 @@ pub struct MultisigAccountWithSequenceNumber {
     pub(crate) sequence_number: u64,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Default, Parser)]
 pub struct TypeArgVec {
     /// TypeTag arguments separated by spaces.
     ///
@@ -2057,7 +2076,7 @@ impl TryInto<Vec<TypeTag>> for TypeArgVec {
     }
 }
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Debug, Default, Parser)]
 pub struct ArgWithTypeVec {
     /// Arguments combined with their type separated by spaces.
     ///
@@ -2223,7 +2242,7 @@ impl TryInto<ViewRequest> for EntryFunctionArguments {
 }
 
 /// Common options for constructing a script payload
-#[derive(Debug, Parser)]
+#[derive(Debug, Default, Parser)]
 pub struct ScriptFunctionArguments {
     #[clap(flatten)]
     pub(crate) type_arg_vec: TypeArgVec,
@@ -2311,4 +2330,14 @@ pub struct OverrideSizeCheckOption {
     /// will still be blocked from publishing.
     #[clap(long)]
     pub(crate) override_size_check: bool,
+}
+
+#[derive(Parser)]
+pub struct ChunkedPublishOption {
+    /// Whether to publish a package in a chunked mode. This may require more than one transaction
+    /// for publishing the Move package.
+    ///
+    /// Use this option for publishing large packages exceeding `MAX_PUBLISH_PACKAGE_SIZE`.
+    #[clap(long)]
+    pub(crate) chunked_publish: bool,
 }
